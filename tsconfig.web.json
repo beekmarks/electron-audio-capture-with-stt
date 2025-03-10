@@ -1,0 +1,7 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.web.json",
+  "include": ["src/renderer/**/*.ts", "src/preload/*.d.ts", "src/vite-env.d.ts", "src/stt-transcription.ts"],
+  "compilerOptions": {
+    "composite": true
+  }
+}
