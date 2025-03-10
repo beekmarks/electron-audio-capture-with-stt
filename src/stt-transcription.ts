@@ -1,58 +1,96 @@
 import { SageMakerRuntimeClient, InvokeEndpointCommand } from "@aws-sdk/client-sagemaker-runtime";
-import * as fs from 'fs';
 import { fromIni } from "@aws-sdk/credential-providers";
 import { Agent } from 'https';
- 
-// Define the local WAV file path
-const localWavFilePath = 'out.wav';
-const endpointName = 'dlsg-ds-asr-real-time-djl-2-endpoint';
- 
-// Read the WAV file from the local file system
-const testData = fs.readFileSync(localWavFilePath);
- 
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+
+// Default endpoint name
+const DEFAULT_ENDPOINT_NAME = 'dlsg-ds-asr-real-time-djl-2-endpoint';
+
 // Define content type and accept type
-const contentType = 'audio/wav';
-const acceptType = 'application/json';
- 
-// Set up AWS credentials and region using the default credential provider chain
-const client = new SageMakerRuntimeClient({
-  region: 'us-east-1', // Replace with your region
-  credentials: fromIni({ profile: 'default' }),
-  requestHandler: new NodeHttpHandler({
-    httpsAgent: new Agent({
-      rejectUnauthorized: false
+const CONTENT_TYPE = 'audio/wav';
+const ACCEPT_TYPE = 'application/json';
+
+/**
+ * Configuration options for the transcription service
+ */
+export interface TranscriptionOptions {
+  region?: string;
+  profile?: string;
+  endpointName?: string;
+}
+
+/**
+ * Transcription result interface
+ */
+export interface TranscriptionResult {
+  text: string;
+  confidence?: number;
+  duration: number;
+  [key: string]: any; // For any additional fields returned by the service
+}
+
+/**
+ * Creates a SageMaker client with the given options
+ */
+function createClient(options: TranscriptionOptions = {}) {
+  return new SageMakerRuntimeClient({
+    region: options.region || 'us-east-1',
+    credentials: fromIni({ profile: options.profile || 'default' }),
+    requestHandler: new NodeHttpHandler({
+      httpsAgent: new Agent({
+        rejectUnauthorized: false
+      })
     })
-  })
-});
- 
-const params = {
-  EndpointName: endpointName,
-  Body: testData,
-  ContentType: contentType,
-  Accept: acceptType,
-};
- 
-const command = new InvokeEndpointCommand(params);
- 
-const startTime = Date.now();
-console.log(`Request started at: ${new Date(startTime).toISOString()}`);
- 
-client.send(command).then(
-  (data) => {
+  });
+}
+
+/**
+ * Transcribes audio data using AWS SageMaker
+ * @param audioData The audio data as a Buffer or Uint8Array
+ * @param options Configuration options
+ * @returns Promise resolving to the transcription result
+ */
+export async function transcribeAudio(
+  audioData: Buffer | Uint8Array,
+  options: TranscriptionOptions = {}
+): Promise<TranscriptionResult> {
+  const client = createClient(options);
+  const endpointName = options.endpointName || DEFAULT_ENDPOINT_NAME;
+  
+  const params = {
+    EndpointName: endpointName,
+    Body: audioData,
+    ContentType: CONTENT_TYPE,
+    Accept: ACCEPT_TYPE,
+  };
+  
+  const command = new InvokeEndpointCommand(params);
+  
+  const startTime = Date.now();
+  console.log(`Transcription request started at: ${new Date(startTime).toISOString()}`);
+  
+  try {
+    const data = await client.send(command);
     const endTime = Date.now();
-    console.log(`Request ended at: ${new Date(endTime).toISOString()}`);
-    console.log(`Duration: ${endTime - startTime} ms`);
- 
-    const output = data.Body;
+    const duration = endTime - startTime;
+    
+    console.log(`Transcription request completed in ${duration} ms`);
+    
+    if (!data.Body) {
+      throw new Error('No response body received from SageMaker endpoint');
+    }
+    
     const decoder = new TextDecoder('utf-8');
-    const jsonString = decoder.decode(output);
+    const jsonString = decoder.decode(data.Body);
     const jsonObject = JSON.parse(jsonString);
-    console.log(jsonObject);
-  },
-  (error) => {
+    
+    return {
+      ...jsonObject,
+      duration
+    };
+  } catch (error) {
     const endTime = Date.now();
-    console.log(`Request ended at: ${new Date(endTime).toISOString()}`);
-    console.log(`Duration: ${endTime - startTime} ms`);
-    console.error(error);
+    console.error(`Transcription failed after ${endTime - startTime} ms:`, error);
+    throw error;
   }
-);
+}

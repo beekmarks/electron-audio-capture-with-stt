@@ -1,5 +1,6 @@
 import { contextBridge } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { transcribeAudio } from '../stt-transcription'
 
 // Custom APIs for renderer
 
@@ -13,6 +14,17 @@ if (process.contextIsolated) {
       bufferAlloc: (size: number) => Buffer.alloc(size),
       writeFile: (path: string, data: Uint8Array) => {
         return electronAPI.ipcRenderer.invoke('writeFile', path, data)
+      },
+      transcribeAudio: async (audioData: Uint8Array) => {
+        // Convert Uint8Array to Buffer for the transcription function
+        const buffer = Buffer.from(audioData);
+        try {
+          const result = await transcribeAudio(buffer);
+          return result;
+        } catch (error) {
+          console.error('Transcription error:', error);
+          throw error;
+        }
       }
     })
   } catch (error) {
