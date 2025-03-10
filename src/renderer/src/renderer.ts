@@ -12,7 +12,8 @@ interface TranscriptionResult {
 
 // Constants
 const INTERVAL_SECONDS = 30;
-const SAMPLE_RATE = 44100;
+const TARGET_SAMPLE_RATE = 8000; // Target sample rate for the SageMaker endpoint
+const DEVICE_SAMPLE_RATE = 44100; // Typical device sample rate
 
 // State variables
 let isRecording = false;
@@ -20,27 +21,71 @@ let recordingSubscription: Subscription | null = null;
 let transcriptionResults: TranscriptionResult[] = [];
 
 /**
- * Renders audio data as a WAV file
+ * Simple audio resampling function to convert from one sample rate to another
+ * @param audioData The original audio data
+ * @param originalSampleRate The original sample rate of the audio data
+ * @param targetSampleRate The target sample rate to convert to
+ * @returns Resampled audio data as Float32Array
+ */
+function resampleAudio(audioData: Float32Array, originalSampleRate: number, targetSampleRate: number): Float32Array {
+  if (originalSampleRate === targetSampleRate) {
+    return audioData;
+  }
+  
+  const ratio = originalSampleRate / targetSampleRate;
+  const newLength = Math.round(audioData.length / ratio);
+  const result = new Float32Array(newLength);
+  
+  // Simple linear interpolation resampling
+  // Note: For production use, consider using a more sophisticated algorithm
+  for (let i = 0; i < newLength; i++) {
+    const position = i * ratio;
+    const index = Math.floor(position);
+    const fraction = position - index;
+    
+    if (index >= audioData.length - 1) {
+      result[i] = audioData[audioData.length - 1];
+    } else {
+      result[i] = audioData[index] * (1 - fraction) + audioData[index + 1] * fraction;
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Renders audio data as a WAV file with the required format specifications:
+ * - PCM encoding (16-bit)
+ * - 8000 Hz sample rate
+ * - Mono (1 channel)
  */
 async function renderAudioToWav(audioData: Float32Array): Promise<Uint8Array> {
   return renderWavFile(audioData, { 
-    isFloat: false, 
-    numChannels: 1, 
-    sampleRate: SAMPLE_RATE 
+    isFloat: false, // PCM format (not floating point) - this will use 16-bit depth
+    numChannels: 1, // Mono
+    sampleRate: TARGET_SAMPLE_RATE // 8000 Hz
   });
 }
 
 /**
  * Processes a chunk of audio data by converting it to WAV and sending for transcription
+ * Ensures the audio format matches the required specifications:
+ * - PCM encoding (16-bit)
+ * - 8000 Hz sample rate
+ * - Mono (1 channel)
  */
 async function processAudioChunk(chunks: number[][]): Promise<TranscriptionResult | null> {
   try {
     // Convert chunks to a single Float32Array
     const numFrames = chunks.reduce((acc, chunk) => acc.concat(chunk), []);
-    const audioData = new Float32Array(numFrames);
+    const originalAudioData = new Float32Array(numFrames);
     
-    // Render as WAV file
-    const wavData = await renderAudioToWav(audioData);
+    // Resample the audio from device sample rate to target sample rate (8000 Hz)
+    console.log(`Resampling audio from ${DEVICE_SAMPLE_RATE}Hz to ${TARGET_SAMPLE_RATE}Hz`);
+    const resampledAudioData = resampleAudio(originalAudioData, DEVICE_SAMPLE_RATE, TARGET_SAMPLE_RATE);
+    
+    // Render as WAV file using the resampled audio data
+    const wavData = await renderAudioToWav(resampledAudioData);
     
     // Save the WAV file (for debugging/reference)
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -73,6 +118,8 @@ function updateTranscriptionUI(result: TranscriptionResult): void {
   const resultsContainer = document.getElementById('transcriptionResults');
   if (!resultsContainer) return;
   
+  console.log('Updating UI with transcription result:', JSON.stringify(result, null, 2));
+  
   const resultElement = document.createElement('div');
   resultElement.className = 'transcription-result';
   
@@ -82,7 +129,37 @@ function updateTranscriptionUI(result: TranscriptionResult): void {
   
   const text = document.createElement('div');
   text.className = 'text';
-  text.textContent = result.text || '(No transcription)';
+  
+  // Extract the text from the result object based on the structure
+  let transcribedText = '(No transcription)';
+  
+  try {
+    if (result.text) {
+      // Handle case where text is an array of objects with text property
+      if (Array.isArray(result.text) && result.text.length > 0) {
+        const textItems = result.text.map(item => {
+          if (typeof item === 'object' && item !== null && 'text' in item) {
+            return item.text;
+          }
+          return String(item);
+        });
+        transcribedText = textItems.join(' ');
+      } 
+      // Handle case where text is a string directly
+      else if (typeof result.text === 'string') {
+        transcribedText = result.text;
+      }
+      // Handle any other format by converting to string
+      else {
+        transcribedText = JSON.stringify(result.text);
+      }
+    }
+  } catch (error) {
+    console.error('Error parsing transcription result:', error);
+    transcribedText = `Error parsing result: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  
+  text.textContent = transcribedText;
   
   resultElement.appendChild(timestamp);
   resultElement.appendChild(text);
